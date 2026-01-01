@@ -33,7 +33,7 @@
 --- @alias EntityID integer
 --- @alias ComponentName string
 --- @alias ComponentType table<string, string>
---- @alias ComponentValues table<string, any>
+--- @alias ComponentValues table<string, any>|boolean
 
 ---- buffer --------------------------------------
 
@@ -261,6 +261,7 @@ function Archetype:add_entity(id, component_values)
   for component, buffer in pairs(self._buffers) do
     assert(type(component_values[component]) == "table",
       "component values should be tables of fields")
+    --- @cast component_values table<ComponentName, table>
     buffer:add(component_values[component] or {})
   end
   self._ids.count = self._ids.count + 1
@@ -301,13 +302,14 @@ end
 --- @field _query_depth integer
 --- @field _deferred_operations function[]
 --- @field _component_types table<ComponentName, ComponentType>
---- @field add_entity fun(self: ECSWorld, component_values: table<ComponentName, ComponentValues>): EntityID
+--- @field _archetype_by_components table<string, Archetype>
+--- @field component fun(self: ECSWorld, name: ComponentName, field_types: ComponentType)
+--- @field tag fun(self: ECSWorld, ...)
+--- @field add_entity fun(self: ECSWorld, component_values: table): EntityID
 --- @field remove_entity fun(self: ECSWorld, id: EntityID)
---- @field query fun(self: ECSWorld, component_list: string[], fn: function)
---- @field query_entity fun(self: ECSWorld, id: EntityID, component_list: ComponentName[], fn: function)
+--- @field query fun(self: ECSWorld, components: ComponentName[], fn: function)
+--- @field query_entity fun(self: ECSWorld, id: EntityID, components: ComponentName[], fn: function)
 --- @field entity_exists fun(self: ECSWorld, id: EntityID): boolean
-
---- @class ECSWorld
 local World = {}
 World.__index = World
 
@@ -603,6 +605,14 @@ function World:_raw_add_components(id, new_component_values)
     return
   end
   assert(self:entity_exists(id), "entity "..id.." doesn't exist")
+
+  -- normalize `component = true` shorthand to `component = {}`
+  for name, value in pairs(new_component_values) do
+    if value == true then
+      new_component_values[name] = {}
+    end
+  end
+
   local current_archetype = self._id_to_archetype[id]
   --- @cast current_archetype Archetype
 
