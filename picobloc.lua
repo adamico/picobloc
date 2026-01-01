@@ -300,12 +300,13 @@ end
 --- @field _query_depth integer
 --- @field _deferred_operations function[]
 --- @field _component_types table<ComponentName, ComponentType>
---- @field sys function
 --- @field add_entity fun(self: ECSWorld, component_values: table<ComponentName, ComponentValues>): EntityID
 --- @field remove_entity fun(self: ECSWorld, id: EntityID)
 --- @field query fun(self: ECSWorld, component_list: string[], fn: function)
 --- @field query_entity fun(self: ECSWorld, id: EntityID, component_list: ComponentName[], fn: function)
 --- @field entity_exists fun(self: ECSWorld, id: EntityID): boolean
+
+--- @class ECSWorld
 local World = {}
 World.__index = World
 
