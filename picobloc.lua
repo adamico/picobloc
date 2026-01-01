@@ -333,7 +333,7 @@ end
 --- @param name ComponentName
 --- @param fields ComponentType
 function World:component(name, fields)
-  assert(not self._component_types[name])
+  assert(not self._component_types[name], 'component already exists: "'..name..'"')
   local component = {}
   for field_name, type in pairs(fields) do
     component[field_name] = type
@@ -350,7 +350,7 @@ end
 --- @param ... ComponentName
 function World:tag(...)
   for _, name in ipairs({...}) do
-    assert(not self._component_types[name], "component already exists: "..name)
+    assert(not self._component_types[name], "tag already exists: "..name)
     self._component_types[name] = {}
   end
 end
@@ -366,7 +366,7 @@ end
 --- @param component_values table<ComponentName, ComponentValues>
 --- @return EntityID
 function World:add_entity(component_values)
-  assert(component_values)
+  assert(component_values, "missing component values")
   local id = self._next_id
   self._id_to_archetype[id] = false -- mark as pending
   self._next_id = self._next_id + 1
@@ -422,7 +422,7 @@ end
 --- @param new_component_values table<ComponentName, ComponentValues>
 function World:add_components(id, new_component_values)
   assert(self:entity_exists_or_pending(id), "tried to add components to non-existent entity")
-  assert(new_component_values)
+  assert(new_component_values, "missing component values")
 
   table.insert(self._deferred_operations, function()
     self:_raw_add_components(id, new_component_values)
@@ -438,7 +438,7 @@ end
 --- @param id EntityID
 --- @param component_list ComponentName[]
 function World:remove_components(id, component_list)
-  assert(#component_list > 0)
+  assert(#component_list > 0, "component list should be > 0")
   assert(self:entity_exists_or_pending(id), "tried to remove components from non-existent entity")
   table.insert(self._deferred_operations, function()
     self:_raw_remove_components(id, component_list)
@@ -537,7 +537,7 @@ end
 --- @param id EntityID
 --- @return table<ComponentName, ComponentValues>
 function World:get_entity_component_values(id)
-  assert(self:entity_exists(id))
+  assert(self:entity_exists(id), "entity "..id.." doesn't exist")
   local archetype = self._id_to_archetype[id]
   --- @cast archetype Archetype
   return archetype:get_entity_component_values(id)
@@ -590,7 +590,7 @@ end
 --- @param id EntityID
 function World:_raw_remove_entity(id)
   local a = self._id_to_archetype[id]
-  assert(a)
+  assert(a, "archetype "..id.." doesn't exist")
   --- @cast a Archetype
   a:remove_entity(id)
   self._id_to_archetype[id] = nil
@@ -602,7 +602,7 @@ function World:_raw_add_components(id, new_component_values)
   if not self:entity_exists_or_pending(id) then
     return
   end
-  assert(self:entity_exists(id))
+  assert(self:entity_exists(id), "entity "..id.." doesn't exist")
   local current_archetype = self._id_to_archetype[id]
   --- @cast current_archetype Archetype
 
@@ -638,7 +638,7 @@ function World:_raw_remove_components(id, component_list)
   if not self:entity_exists_or_pending(id) then
     return
   end
-  assert(self:entity_exists(id))
+  assert(self:entity_exists(id), "entity "..id.." doesn't exist")
   local current_archetype = self._id_to_archetype[id]
   --- @cast current_archetype Archetype
 
