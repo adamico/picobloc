@@ -3,95 +3,6 @@
 -- an archetype and userdata-based ecs library for the
 -- [picotron fantasy workstation](https://www.lexaloffle.com/picotron.php).
 --
--- very much work in progress!
---
--- entities are just integer ids, their data sorted into archetypes based on their components.
--- component fields are in struct-of-arrays-style in picotron userdata for fast processing.
---
--- it can also be used without picotron, in which case it stores component fields in lua tables (still 0-based).
---
--- ## example usage
---
--- you can see the example running [here](https://www.lexaloffle.com/bbs/?tid=141824).
---
--- ```lua
--- include 'picobloc.lua'
--- local world = World ()
---
--- -- define the components you're going to use
--- world:component ('position',     { x = 'f64', y = 'f64' })
--- world:component ('velocity',     { x = 'f64', y = 'f64' })
--- world:component ('acceleration', { x = 'f64', y = 'f64' })
--- world:component ('sprite',       { size = 'f64' })
---
--- -- create some entities
--- for i = 1, 4000 do
---   world:add_entity {
---     position = { x = rnd (480), y = rnd (270) },
---     velocity = { x = rnd(1)-0.5, y = rnd(1)-0.5 },
---     acceleration = { x = 0, y = 0.1 },
---     sprite   = { size = 1 },
---   }
--- end
---
--- function _update ()
---   -- query all entities with a velocity and an acceleration
---   world:query ({'velocity', 'acceleration'}, function (ids, velocities, accelerations)
---     -- apply acceleration using bulk userdata operations
---     velocities.x:add (accelerations.x, true, 0, 0, ids.count)
---     velocities.y:add (accelerations.y, true, 0, 0, ids.count)
---   end)
---
---   -- query all entities with a position and a velocity
---   world:query ({'position', 'velocity'}, function (ids, positions, velocities)
---     -- apply motion using bulk userdata operations
---     positions.x:add (velocities.x, true, 0, 0, ids.count)
---     positions.x:mod (480, true, 0, 0, ids.count)
---     positions.y:add (velocities.y, true, 0, 0, ids.count)
---   end)
---
---   world:query ({'position', 'velocity'}, function (ids, positions, velocities)
---     -- when you can't use bulk operations, loop through the entities.
---     --
---     -- note that unlike regular lua tables, `ids` and the field buffers use zero-based indices.
---     -- use ids.first and ids.last to loop over the indices
---     for i = ids.first, ids.last do
---       if positions.y[i] >= 270 then
---         positions.y[i] = -1
---         velocities.y[i] = rnd(1)
---       end
---     end
---   end)
--- end
---
--- function _draw ()
---   cls ()
---   -- query all entities with a position and a sprite
---   world:query ({'position', 'sprite'}, function (ids, positions, sprites)
---     -- draw all the sprites
---     for i = ids.first, ids.last do
---       circ (positions.x[i], positions.y[i], sprites.size[i], 7)
---     end
---   end)
--- end
--- ```
---
--- the same example is presented in more structured way in the example/ folder
---
--- ## other picotron ecs libraries
---
--- these two model entities as lua tables rather than integer ids, so are probably easier to use
--- if you aren't planning on using block userdata operations:
---
--- - [pecs](https://github.com/jesstelford/pecs/) - ecs for pico-8 and picotron in very few tokens
--- - [picotron-ECS-framework](https://github.com/abledbody/picotron-ECS-framework/) - ecs for picotron
---
--- ## further reading
---
--- - [require function for loading lua modules](https://www.lexaloffle.com/bbs/?tid=140784) - used in `example/compat.lua`
--- - [picotron_userdata.txt](https://www.lexaloffle.com/dl/docs/picotron_userdata.html) - has information on block userdata operations
--- - [Picotron User Manual](https://www.lexaloffle.com/dl/docs/picotron_manual.html) - more up-to-date picotron info
-
 -- ## license
 --
 -- Copyright 2024 Kira Boom
@@ -114,16 +25,28 @@
 -- FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 -- DEALINGS IN THE SOFTWARE.
 
+--------------------------------------------------
+-- types
+--------------------------------------------------
+
+--- @alias EntityID integer
+--- @alias ComponentName string
+--- @alias ComponentType table<string, string>
+--- @alias ComponentValues table<string, any>
+
 ---- buffer --------------------------------------
 
 local is_picotron = rawget(_G, "userdata") ~= nil
 
+--- @generic T
+--- @param type "value"|string
+--- @param len integer
+--- @return userdata|table<integer, any>
 local function new_buffer(type, len)
   if is_picotron and type ~= "value" then
     return userdata(type, len)
   else
     local buffer = {}
-    -- buffer._len = len
     for i = 0, len - 1 do
       buffer[i] = 0
     end
@@ -142,19 +65,25 @@ end
 
 ---- query decoding ------------------------------
 
--- returns is_negative, is_optional, name
+--- @param param string
+--- @return boolean is_negative
+--- @return boolean is_optional
+--- @return string name
 local function decode_query_param(param)
-  if param:sub(1, 1) == "!" then
-    assert(param:sub(-1) ~= "?", "invalid query parameter")
-    return true, false, param:sub(2)
-  elseif param:sub(-1) == "?" then
-    return false, true, param:sub(1, -2)
+  if string.sub(param, 1, 1) == "!" then
+    assert(string.sub(param, -1) ~= "?", "invalid query parameter")
+    return true, false, string.sub(param, 2)
+  elseif string.sub(param, -1) == "?" then
+    return false, true, string.sub(param, 1, -2)
   else
     return false, false, param
   end
 end
 
--- returns required_components, negative_components, queried_components
+--- @param component_list string[]
+--- @return string[] required_components
+--- @return string[] negative_components
+--- @return string[] queried_components
 local function process_query(component_list)
   local required_components = {}
   local negative_components = {}
@@ -173,13 +102,17 @@ local function process_query(component_list)
   return required_components, negative_components, queried_components
 end
 
----- component buffer ----------------------------
-
+--- @class ComponentBuffer
+--- @field field_buffers table<string, userdata|table>
+--- @field _field_types table<string, string>
+--- @field _count integer
+--- @field _capacity integer
 local ComponentBuffer = {}
 ComponentBuffer.__index = ComponentBuffer
 
+--- @param field_types ComponentType
+--- @return ComponentBuffer
 function ComponentBuffer.new(field_types)
-  -- field_types is a table of name -> type
   local self = setmetatable({}, ComponentBuffer)
   self.field_buffers = {}
   self._field_types = {}
@@ -206,6 +139,7 @@ function ComponentBuffer:_grow()
   end
 end
 
+--- @param field_values table<string, any>
 function ComponentBuffer:add(field_values)
   if self._count == self._capacity then
     self:_grow()
@@ -217,6 +151,7 @@ function ComponentBuffer:add(field_values)
   end
 end
 
+--- @param index integer
 function ComponentBuffer:remove(index)
   assert(0 <= index and index < self._count)
   for name in pairs(self._field_types) do
@@ -225,6 +160,8 @@ function ComponentBuffer:remove(index)
   self._count = self._count - 1
 end
 
+--- @param index integer
+--- @return table<string, any>
 function ComponentBuffer:get_item_fields(index)
   assert(0 <= index and index < self._count)
   local field_values = {}
@@ -234,13 +171,16 @@ function ComponentBuffer:get_item_fields(index)
   return field_values
 end
 
----- archetype -----------------------------------
-
+--- @class Archetype
+--- @field _buffers table<string, ComponentBuffer>
+--- @field _id_to_index table<EntityID, integer>
+--- @field _ids { count: integer, first: integer, last: integer, [integer]: EntityID }
 local Archetype = {}
 Archetype.__index = Archetype
 
+--- @param components_map table<ComponentName, ComponentType>
+--- @return Archetype
 function Archetype.new(components_map)
-  -- components_map is map of component name -> component
   local self = setmetatable({}, Archetype)
   self._buffers = {}
   self._id_to_index = {}
@@ -251,6 +191,9 @@ function Archetype.new(components_map)
   return self
 end
 
+--- @param required_components ComponentName[]
+--- @param negative_components ComponentName[]
+--- @return boolean
 function Archetype:satisfies_query(required_components, negative_components)
   for _, component in ipairs(required_components) do
     if not self._buffers[component] then
@@ -265,6 +208,8 @@ function Archetype:satisfies_query(required_components, negative_components)
   return true
 end
 
+--- @param components_list ComponentName[]
+--- @param fn function
 function Archetype:query(components_list, fn)
   local args = {}
   for c, component in ipairs(components_list) do
@@ -272,10 +217,14 @@ function Archetype:query(components_list, fn)
     args[c] = component_buffer and component_buffer.field_buffers
   end
   if self._ids.count > 0 then
+    --- @diagnostic disable-next-line: deprecated
     fn(self._ids, unpack(args, 1, #components_list))
   end
 end
 
+--- @param id EntityID
+--- @param components_list ComponentName[]
+--- @param fn function
 function Archetype:query_entity(id, components_list, fn)
   local index = assert(self._id_to_index[id], "missing entity")
   local args = {}
@@ -283,9 +232,12 @@ function Archetype:query_entity(id, components_list, fn)
     local component_buffer = self._buffers[component]
     args[c] = component_buffer and component_buffer.field_buffers
   end
+  --- @diagnostic disable-next-line: deprecated
   fn(index, unpack(args, 1, #components_list))
 end
 
+--- @param component_set table<ComponentName, boolean>
+--- @return boolean
 function Archetype:matches_component_set_exactly(component_set)
   for c, _ in pairs(component_set) do
     if not self._buffers[c] then
@@ -300,8 +252,9 @@ function Archetype:matches_component_set_exactly(component_set)
   return true
 end
 
+--- @param id EntityID
+--- @param component_values table<ComponentName, ComponentValues>
 function Archetype:add_entity(id, component_values)
-  -- component_values is a map of component -> table of field values
   self._id_to_index[id] = self._ids.count
   self._ids[self._ids.count] = id
   for component, buffer in pairs(self._buffers) do
@@ -313,6 +266,7 @@ function Archetype:add_entity(id, component_values)
   self._ids.last = self._ids.count - 1
 end
 
+--- @param id EntityID
 function Archetype:remove_entity(id)
   local index = self._id_to_index[id]
   assert(index)
@@ -327,8 +281,9 @@ function Archetype:remove_entity(id)
   self._ids.last = self._ids.count - 1
 end
 
+--- @param id EntityID
+--- @return table<ComponentName, ComponentValues>
 function Archetype:get_entity_component_values(id)
-  -- returns map of component name -> {map of fieldname -> value}
   local values = {}
   local index = self._id_to_index[id]
   for component, buffer in pairs(self._buffers) do
@@ -337,29 +292,29 @@ function Archetype:get_entity_component_values(id)
   return values
 end
 
----- world ---------------------------------------
-
+--- @class ECSWorld
+--- @field resources table<any, any> can be used for storing any singletons or global state that needs to been accessed by systems.
+--- @field _archetypes Archetype[]
+--- @field _id_to_archetype table<EntityID, Archetype|false>
+--- @field _next_id EntityID
+--- @field _query_depth integer
+--- @field _deferred_operations function[]
+--- @field _component_types table<ComponentName, ComponentType>
+--- @field sys function
+--- @field add_entity fun(self: ECSWorld, component_values: table<ComponentName, ComponentValues>): EntityID
+--- @field remove_entity fun(self: ECSWorld, id: EntityID)
+--- @field query fun(self: ECSWorld, component_list: string[], fn: function)
+--- @field query_entity fun(self: ECSWorld, id: EntityID, component_list: ComponentName[], fn: function)
+--- @field entity_exists fun(self: ECSWorld, id: EntityID): boolean
 local World = {}
 World.__index = World
 
---- ```lua
---- local world = World()
---- ```
----
---- returns a new world object. it contains the rest of the api.
----
---- ```lua
---- world.resources
---- ```
---
---- not used by picobloc itself, the world contains a `resources` table which
---- you can use for storing any singletons or global state that needs to be
---- accessed by systems.
+--- @return ECSWorld
 function World.new()
   local self = setmetatable({}, World)
-  self.resources = {}        -- for user
-  self._archetypes = {}      -- list
-  self._id_to_archetype = {} -- id -> archetype, false if an entity is queued for addition
+  self.resources = {}
+  self._archetypes = {}
+  self._id_to_archetype = {}
   self._next_id = 1
   self._query_depth = 0
   self._deferred_operations = {}
@@ -367,13 +322,14 @@ function World.new()
   return self
 end
 
---- ```lua
---- world:component (name, { field_name = field_type, ... })
---- ```
+--- Creates a new component type. valid field types are the picotron userdata
 ---
---- creates a new component type. valid field types are the picotron userdata
 --- types, or the string `'value'`, which means the field is stored in a plain
+---
 --- lua table instead of a userdata.
+---
+--- @param name ComponentName
+--- @param fields ComponentType
 function World:component(name, fields)
   assert(not self._component_types[name])
   local component = {}
@@ -383,13 +339,13 @@ function World:component(name, fields)
   self._component_types[name] = component
 end
 
---- ```lua
---- world:tag ('player', 'controllable', 'enemy', ...)
---- ```
+--- Registers one or more tag components (components with no fields).
 ---
---- registers one or more tag components (components with no fields).
 --- tags are used purely for filtering entities in queries.
+---
 --- in entity definitions, use `tag_name = true` or `tag_name = {}`.
+---
+--- @param ... ComponentName
 function World:tag(...)
   for _, name in ipairs({...}) do
     assert(not self._component_types[name], "component already exists: "..name)
@@ -397,18 +353,20 @@ function World:tag(...)
   end
 end
 
---- ```lua
---- local id = world:add_entity ({ component_name = { component_field = value, ... }, ... })
---- ```
+--- Adds an entity with the given components, initializing their fields to the
 ---
---- adds an entity with the given components, initializing their fields to the
 --- given values. missing fields are initialized to 0. if done within a query,
+---
 --- this operation will be deferred until the query ends, so don't modify the
+---
 --- passed table after calling this.
+---
+--- @param component_values table<ComponentName, ComponentValues>
+--- @return EntityID
 function World:add_entity(component_values)
   assert(component_values)
   local id = self._next_id
-  self._id_to_archetype[id] = false  -- mark as pending
+  self._id_to_archetype[id] = false -- mark as pending
   self._next_id = self._next_id + 1
   table.insert(self._deferred_operations, function()
     self:_raw_add_entity(id, component_values)
@@ -417,12 +375,11 @@ function World:add_entity(component_values)
   return id
 end
 
---- ```lua
---- world:remove_entity (id)
---- ```
+--- Removes an entity by id. if done within a query, this operation
 ---
---- removes an entity by id. if done within a query, this operation will be
---- deferred until the query ends.
+--- will be deferred until the query ends.
+---
+--- @param id EntityID
 function World:remove_entity(id)
   assert(self:entity_exists_or_pending(id), "tried to remove non-existent entity")
   table.insert(self._deferred_operations, function()
@@ -431,36 +388,36 @@ function World:remove_entity(id)
   self:_process_deferred()
 end
 
---- ```lua
---- world:entity_exists (id)
---- ```
+--- Returns true if the entity exists, otherwise false. for deferred added
 ---
---- returns true if the entity exists, otherwise false. for deferred added
 --- entities this will return false until they are actually added.
+---
+--- @param id EntityID
+--- @return boolean
 function World:entity_exists(id)
   return not not self._id_to_archetype[id]
 end
 
---
---- ```lua
---- world:entity_exists_or_pending (id)
---- ```
+--- Returns true if the entity exists or has been queued for addition, otherwise false
 ---
---- returns true if the entity exists or has been queued for addition,
---- otherwise false
+--- @param id EntityID
+--- @return boolean
 function World:entity_exists_or_pending(id)
   return self._id_to_archetype[id] ~= nil
 end
 
---- ```lua
---- world:add_components (id, { component_name = { component_field = value, ...}, ...})
---- ```
+--- Adds components to an existing entity. field values are initialized to the
 ---
---- adds components to an existing entity. field values are initialized to the
 --- provided values or to 0. adding a component that is already on the entity
+---
 --- does nothing (i.e. the component values are not changed). if done within a
+---
 --- query, this operation will be deferred until the query ends, so don't
+---
 --- modify the passed table after calling this.
+---
+--- @param id EntityID
+--- @param new_component_values table<ComponentName, ComponentValues>
 function World:add_components(id, new_component_values)
   assert(self:entity_exists_or_pending(id), "tried to add components to non-existent entity")
   assert(new_component_values)
@@ -471,13 +428,13 @@ function World:add_components(id, new_component_values)
   self:_process_deferred()
 end
 
---- ```lua
---- world:remove_components (id, { 'component_name', ...})
---- ```
+--- Removes the named components from the entity. if done within a query, this
 ---
---- removes the named components from the entity. if done within a query, this
 --- operation will be deferred until the query ends, so don't modify the passed
---- table after calling this.
+---
+--- table after calling this
+--- @param id EntityID
+--- @param component_list ComponentName[]
 function World:remove_components(id, component_list)
   assert(#component_list > 0)
   assert(self:entity_exists_or_pending(id), "tried to remove components from non-existent entity")
@@ -487,34 +444,46 @@ function World:remove_components(id, component_list)
   self:_process_deferred()
 end
 
---- ```lua
---- world:query ({'component_query', ...}, function (ids, component_name, ...) ... end)
---- ```
+--- Queries all entity archetypes and calls a function for each group that
 ---
---- queries all entity archetypes and calls a function for each group that
 --- matches. this is the main way to access entities. `fn` is called with the
+---
 --- following arguments:
 ---
 --- - the map of `{index -> entity id}` for all the entities in this archetype.
+---
 --- - the maps of `{field -> buffer}` for the fields of each requested component.
+---
 ---   the buffers will usually be picotron userdata, but can be lua tables
+---
 ---   if the corresponding field type is `'value'` (or if not running in picotron).
 ---
 --- note that all of these buffers (userdata or table) are *zero-based*, unlike
+---
 --- typical lua. `ids.count` gives the number of entities in this batch, so to
+---
 --- loop over all the entities, use `for i = 0, ids.count-1 do ... end`.
 ---
 --- `'component_query'` can be:
 ---
 --- - the name of a component, which will be required, its field buffers given
+---
 ---   as an argument to `fn`.
+---
 --- - a component name followed by `?`, which signals that the component is
+---
 ---   optional. the corresponding argument to `fn` will be `nil` if it isn't present.
+---
 --- - `!` followed by the name of the component, which means the archetype must
+---
 ---   not have the given component. no matching argument will be given to `fn`.
 ---
 --- you may remove/add entities and components during a query, using the entity
+---
 --- ids in `ids`, but it won't actually happen until the whole query is done.
+---
+--- @param component_list string[]
+--- @param fn function
 function World:query(component_list, fn)
   self._query_depth = self._query_depth + 1
   local required_components, negative_components, queried_components = process_query(component_list)
@@ -527,21 +496,25 @@ function World:query(component_list, fn)
   self:_process_deferred()
 end
 
---- ```lua
---- world:query_entity (id, {'component_query', ...}, function (index, component_name, ...) ... end)
---- ```
+--- Queries an individual entity. use this to access/change an individual
 ---
---- queries an individual entity. use this to access/change an individual
 --- entity's values. `fn` will be given the entity's index within the provided
+---
 --- buffers. if the entity does not match the given query, `fn` will not be called.
 ---
 --- you may remove/add entities and components during a query, but it won't
+---
 --- actually happen until the whole query is done.
+---
+--- @param id EntityID
+--- @param component_list ComponentName[]
+--- @param fn function
 function World:query_entity(id, component_list, fn)
   self._query_depth = self._query_depth + 1
   local required_components, negative_components, queried_components = process_query(component_list)
   assert(self:entity_exists(id), "entity doesn\'t exist")
   local archetype = self._id_to_archetype[id]
+  --- @cast archetype Archetype
   if archetype:satisfies_query(required_components, negative_components) then
     archetype:query_entity(id, queried_components, fn)
   end
@@ -549,21 +522,28 @@ function World:query_entity(id, component_list, fn)
   self:_process_deferred()
 end
 
---- ```lua
---- world:get_entity_component_values (id)
---- ```
---- creates and returns a table containing a map of
+--- Creates and returns a table containing a map of
+---
 --- `{component_name -> {field_name -> field_value}}`.
+---
 --- this is a copy of the original data, so modifying it has no effect on the
+---
 --- entity. use this when you want to get all the component values, without
+---
 --- knowing in advance which components are present.
+---
+--- @param id EntityID
+--- @return table<ComponentName, ComponentValues>
 function World:get_entity_component_values(id)
   assert(self:entity_exists(id))
-  return self._id_to_archetype[id]:get_entity_component_values(id)
+  local archetype = self._id_to_archetype[id]
+  --- @cast archetype Archetype
+  return archetype:get_entity_component_values(id)
 end
 
+--- @param component_set table<ComponentName, any>
+--- @return Archetype
 function World:_find_archetype(component_set)
-  -- component_set keys are the components
   for _, a in ipairs(self._archetypes) do
     if a:matches_component_set_exactly(component_set) then
       return a
@@ -590,6 +570,8 @@ function World:_process_deferred()
   end
 end
 
+--- @param id EntityID
+--- @param component_values table<ComponentName, ComponentValues>
 function World:_raw_add_entity(id, component_values)
   -- component_values is a map of component_name -> table of field values
   -- normalize `component = true` shorthand to `component = {}`
@@ -603,21 +585,25 @@ function World:_raw_add_entity(id, component_values)
   self._id_to_archetype[id] = a
 end
 
+--- @param id EntityID
 function World:_raw_remove_entity(id)
   local a = self._id_to_archetype[id]
   assert(a)
+  --- @cast a Archetype
   a:remove_entity(id)
   self._id_to_archetype[id] = nil
 end
 
+--- @param id EntityID
+--- @param new_component_values table<ComponentName, ComponentValues>
 function World:_raw_add_components(id, new_component_values)
   if not self:entity_exists_or_pending(id) then
     return
   end
   assert(self:entity_exists(id))
   local current_archetype = self._id_to_archetype[id]
+  --- @cast current_archetype Archetype
 
-  -- build new component set
   local new_component_set = {}
   for component, _ in pairs(current_archetype._buffers) do
     new_component_set[component] = true
@@ -644,14 +630,16 @@ function World:_raw_add_components(id, new_component_values)
   self._id_to_archetype[id] = new_archetype
 end
 
+--- @param id EntityID
+--- @param component_list ComponentName[]
 function World:_raw_remove_components(id, component_list)
   if not self:entity_exists_or_pending(id) then
     return
   end
   assert(self:entity_exists(id))
   local current_archetype = self._id_to_archetype[id]
+  --- @cast current_archetype Archetype
 
-  -- build new component set
   local new_component_set = {}
   for comp, _ in pairs(current_archetype._buffers) do
     new_component_set[comp] = true
@@ -665,7 +653,6 @@ function World:_raw_remove_components(id, component_list)
     return
   end
 
-  -- transfer entity to the new archetype
   local component_values = current_archetype:get_entity_component_values(id)
   current_archetype:remove_entity(id)
   new_archetype:add_entity(id, component_values)
@@ -714,7 +701,7 @@ local function test_component_buffer()
   assert(values.x == 1 and values.y == 2, "original values should still be present after growing the buffer")
 
   -- test removing an element (remove the second element, index 1)
-  buffer:remove(1)  -- swaps with the last element before removing
+  buffer:remove(1) -- swaps with the last element before removing
   assert(buffer._count == 9, "count should be 9")
 
   -- ensure that the element at index 1 is now what was the last element
