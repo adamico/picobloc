@@ -26,8 +26,10 @@
 -- FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 -- DEALINGS IN THE SOFTWARE.
 
----- buffer --------------------------------------
-
+--- Create a new buffer
+--- @param type string
+--- @param len number
+--- @return Userdata
 local function new_buffer(type, len)
   if type ~= "value" then
     return userdata(type, len)
@@ -50,9 +52,9 @@ local function new_buffer(type, len)
   end
 end
 
----- query decoding ------------------------------
-
--- returns is_negative, is_optional, name
+--- Decode query parameters
+--- @param param string
+--- @return boolean, boolean, string
 local function decode_query_param(param)
   if param:sub(1, 1) == "!" then
     assert(param:sub(-1) ~= "?", "invalid query parameter")
@@ -64,7 +66,11 @@ local function decode_query_param(param)
   end
 end
 
--- returns required_components, negative_components, queried_components
+--- Process query
+--- @param component_list table
+--- @return table
+--- @return table
+--- @return table
 local function process_query(component_list)
   local required_components = {}
   local negative_components = {}
@@ -83,13 +89,15 @@ local function process_query(component_list)
   return required_components, negative_components, queried_components
 end
 
----- component buffer ----------------------------
-
+--- @class ComponentBuffer
+--- @field field_buffers table
+--- @field _field_types table
+--- @field _count number
+--- @field _capacity number
 local ComponentBuffer = {}
 ComponentBuffer.__index = ComponentBuffer
 
 function ComponentBuffer.new(field_types)
-  -- field_types is a table of name -> type
   local self = setmetatable({}, ComponentBuffer)
   self.field_buffers = {}
   self._field_types = {}
@@ -146,6 +154,10 @@ end
 
 ---- archetype -----------------------------------
 
+--- @class Archetype
+--- @field _buffers table
+--- @field _id_to_index table
+--- @field _ids table
 local Archetype = {}
 Archetype.__index = Archetype
 
@@ -247,21 +259,18 @@ function Archetype:get_entity_component_values(id)
   return values
 end
 
----- world ---------------------------------------
-
+--- @class World
+--- @field resources table
+--- @_archetypes table
+--- @_id_to_archetype table
+--- @_next_id number
+--- @_query_depth number
+--- @_deferred_operations table
+--- @_component_types table
 local World = {}
 World.__index = World
 
---- ```lua
---- local world = World()
---- ```
----
---- returns a new world object. it contains the rest of the api.
----
---- ```lua
---- world.resources
---- ```
---
+
 --- not used by picobloc itself, the world contains a `resources` table which
 --- you can use for storing any singletons or global state that needs to be
 --- accessed by systems.
@@ -277,13 +286,15 @@ function World.new()
   return self
 end
 
---- ```lua
---- world:component (name, { field_name = field_type, ... })
---- ```
+--- Component
 ---
---- creates a new component type. valid field types are the picotron userdata
---- types, or the string `'value'`, which means the field is stored in a plain
+--- creates archetypes new component type. valid field types are the picotron userdata types,
+---
+---  or the string `'value'`, which means the field is stored in a plain
+---
 --- lua table instead of a userdata.
+--- @param name string
+--- @param fields table
 function World:component(name, fields)
   assert(not self._component_types[name])
   local component = {}
