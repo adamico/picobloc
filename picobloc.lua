@@ -149,7 +149,9 @@ function ComponentBuffer:add(field_values)
   local i = self._count
   self._count = self._count + 1
   for name in pairs(self._field_types) do
-    self.field_buffers[name][i] = field_values[name] or 0
+    local val = field_values[name]
+    if val == nil then val = 0 end
+    self.field_buffers[name][i] = val
   end
 end
 
