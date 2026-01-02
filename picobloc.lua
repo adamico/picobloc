@@ -34,6 +34,7 @@
 --- @alias ComponentName string
 --- @alias ComponentType table<string, string>
 --- @alias ComponentValues table<string, any>|boolean
+--- @alias QueryIDs { count: integer, first: integer, last: integer, [integer]: EntityID }
 
 ---- buffer --------------------------------------
 
@@ -303,19 +304,23 @@ end
 --- @field _deferred_operations function[]
 --- @field _component_types table<ComponentName, ComponentType>
 --- @field _archetype_by_components table<string, Archetype>
---- @field component fun(self: ECSWorld, name: ComponentName, field_types: ComponentType)
+--- @field component fun(self: ECSWorld, name: ComponentName, fields: ComponentType)
 --- @field tag fun(self: ECSWorld, ...)
---- @field add_entity fun(self: ECSWorld, component_values: table): EntityID
+--- @field add_entity fun(self: ECSWorld, component_values: table<ComponentName, ComponentValues>): EntityID
 --- @field remove_entity fun(self: ECSWorld, id: EntityID)
---- @field query fun(self: ECSWorld, components: ComponentName[], fn: function)
---- @field query_entity fun(self: ECSWorld, id: EntityID, components: ComponentName[], fn: function)
+--- @field query fun(self: ECSWorld, components: ComponentName[], fn: fun(ids: QueryIDs, ...))
+--- @field query_entity fun(self: ECSWorld, id: EntityID, components: ComponentName[], fn: fun(index: integer, ...))
 --- @field entity_exists fun(self: ECSWorld, id: EntityID): boolean
-local World = {}
-World.__index = World
+--- @field entity_exists_or_pending fun(self: ECSWorld, id: EntityID): boolean
+--- @field add_components fun(self: ECSWorld, id: EntityID, new_component_values: table<ComponentName, ComponentValues>)
+--- @field remove_components fun(self: ECSWorld, id: EntityID, component_list: ComponentName[])
+--- @field get_entity_component_values fun(self: ECSWorld, id: EntityID): table<ComponentName, ComponentValues>
+local ECSWorld = {}
+ECSWorld.__index = ECSWorld
 
 --- @return ECSWorld
-function World.new()
-  local self = setmetatable({}, World)
+function ECSWorld.new()
+  local self = setmetatable({}, ECSWorld)
   self.resources = {}
   self._archetypes = {}
   self._id_to_archetype = {}
@@ -334,7 +339,7 @@ end
 ---
 --- @param name ComponentName
 --- @param fields ComponentType
-function World:component(name, fields)
+function ECSWorld:component(name, fields)
   assert(not self._component_types[name], 'component already exists: "'..name..'"')
   local component = {}
   for field_name, type in pairs(fields) do
@@ -350,7 +355,7 @@ end
 --- in entity definitions, use `tag_name = true` or `tag_name = {}`.
 ---
 --- @param ... ComponentName
-function World:tag(...)
+function ECSWorld:tag(...)
   for _, name in ipairs({...}) do
     assert(not self._component_types[name], "tag already exists: "..name)
     self._component_types[name] = {}
@@ -367,7 +372,7 @@ end
 ---
 --- @param component_values table<ComponentName, ComponentValues>
 --- @return EntityID
-function World:add_entity(component_values)
+function ECSWorld:add_entity(component_values)
   assert(component_values, "missing component values")
   local id = self._next_id
   self._id_to_archetype[id] = false -- mark as pending
@@ -384,7 +389,7 @@ end
 --- will be deferred until the query ends.
 ---
 --- @param id EntityID
-function World:remove_entity(id)
+function ECSWorld:remove_entity(id)
   assert(self:entity_exists_or_pending(id), "tried to remove non-existent entity")
   table.insert(self._deferred_operations, function()
     self:_raw_remove_entity(id)
@@ -398,7 +403,7 @@ end
 ---
 --- @param id EntityID
 --- @return boolean
-function World:entity_exists(id)
+function ECSWorld:entity_exists(id)
   return not not self._id_to_archetype[id]
 end
 
@@ -406,7 +411,7 @@ end
 ---
 --- @param id EntityID
 --- @return boolean
-function World:entity_exists_or_pending(id)
+function ECSWorld:entity_exists_or_pending(id)
   return self._id_to_archetype[id] ~= nil
 end
 
@@ -422,7 +427,7 @@ end
 ---
 --- @param id EntityID
 --- @param new_component_values table<ComponentName, ComponentValues>
-function World:add_components(id, new_component_values)
+function ECSWorld:add_components(id, new_component_values)
   assert(self:entity_exists_or_pending(id), "tried to add components to non-existent entity")
   assert(new_component_values, "missing component values")
 
@@ -439,7 +444,7 @@ end
 --- table after calling this
 --- @param id EntityID
 --- @param component_list ComponentName[]
-function World:remove_components(id, component_list)
+function ECSWorld:remove_components(id, component_list)
   assert(#component_list > 0, "component list should be > 0")
   assert(self:entity_exists_or_pending(id), "tried to remove components from non-existent entity")
   table.insert(self._deferred_operations, function()
@@ -488,7 +493,7 @@ end
 ---
 --- @param component_list string[]
 --- @param fn function
-function World:query(component_list, fn)
+function ECSWorld:query(component_list, fn)
   self._query_depth = self._query_depth + 1
   local required_components, negative_components, queried_components = process_query(component_list)
   for _, a in ipairs(self._archetypes) do
@@ -513,7 +518,7 @@ end
 --- @param id EntityID
 --- @param component_list ComponentName[]
 --- @param fn function
-function World:query_entity(id, component_list, fn)
+function ECSWorld:query_entity(id, component_list, fn)
   self._query_depth = self._query_depth + 1
   local required_components, negative_components, queried_components = process_query(component_list)
   assert(self:entity_exists(id), "entity doesn\'t exist")
@@ -538,7 +543,7 @@ end
 ---
 --- @param id EntityID
 --- @return table<ComponentName, ComponentValues>
-function World:get_entity_component_values(id)
+function ECSWorld:get_entity_component_values(id)
   assert(self:entity_exists(id), "entity "..id.." doesn't exist")
   local archetype = self._id_to_archetype[id]
   --- @cast archetype Archetype
@@ -547,7 +552,7 @@ end
 
 --- @param component_set table<ComponentName, any>
 --- @return Archetype
-function World:_find_archetype(component_set)
+function ECSWorld:_find_archetype(component_set)
   for _, a in ipairs(self._archetypes) do
     if a:matches_component_set_exactly(component_set) then
       return a
@@ -565,7 +570,7 @@ function World:_find_archetype(component_set)
   return a
 end
 
-function World:_process_deferred()
+function ECSWorld:_process_deferred()
   if self._query_depth == 0 and #self._deferred_operations > 0 then
     for _, op in ipairs(self._deferred_operations) do
       op()
@@ -576,7 +581,7 @@ end
 
 --- @param id EntityID
 --- @param component_values table<ComponentName, ComponentValues>
-function World:_raw_add_entity(id, component_values)
+function ECSWorld:_raw_add_entity(id, component_values)
   -- component_values is a map of component_name -> table of field values
   -- normalize `component = true` shorthand to `component = {}`
   for name, value in pairs(component_values) do
@@ -590,7 +595,7 @@ function World:_raw_add_entity(id, component_values)
 end
 
 --- @param id EntityID
-function World:_raw_remove_entity(id)
+function ECSWorld:_raw_remove_entity(id)
   local a = self._id_to_archetype[id]
   assert(a, "archetype "..id.." doesn't exist")
   --- @cast a Archetype
@@ -600,7 +605,7 @@ end
 
 --- @param id EntityID
 --- @param new_component_values table<ComponentName, ComponentValues>
-function World:_raw_add_components(id, new_component_values)
+function ECSWorld:_raw_add_components(id, new_component_values)
   if not self:entity_exists_or_pending(id) then
     return
   end
@@ -644,7 +649,7 @@ end
 
 --- @param id EntityID
 --- @param component_list ComponentName[]
-function World:_raw_remove_components(id, component_list)
+function ECSWorld:_raw_remove_components(id, component_list)
   if not self:entity_exists_or_pending(id) then
     return
   end
@@ -747,7 +752,7 @@ local function test_archetype()
 end
 
 local function test_world()
-  local world = World.new()
+  local world = ECSWorld.new()
   world:component("position", {
     x = "f64",
     y = "f64",
@@ -829,7 +834,7 @@ local function test_world()
 end
 
 local function test_advanced_queries()
-  local world = World.new()
+  local world = ECSWorld.new()
   world:component("position", {x = "f64", y = "f64"})
   world:component("health", {value = "f64"})
   world:component("velocity", {x = "f64", y = "f64"})
@@ -874,10 +879,14 @@ test_advanced_queries()
 
 ---- return --------------------------------------
 
+--- @class PicoblocModule
+--- @field World fun(): ECSWorld
+
 if rawget(_G, "require") then
   -- if require is available, behave like a real lua module
-  return {World = World.new}
+  --- @type PicoblocModule
+  return {World = ECSWorld.new}
 else
   -- otherwise we're using include, so store World in a global variable
-  _G.World = World.new
+  _G.World = ECSWorld.new
 end
